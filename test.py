@@ -2,37 +2,23 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class SementicContextExtractor(nn.Module):
-    def __init__(self):
-        super(SementicContextExtractor, self).__init__()
+batch_size = 2
+hidden_size = 5
 
-        self.conv3d = nn.Conv3d(
-            in_channels=1,
-            out_channels=1,
-            kernel_size=(1, 3, 3),
-            stride=(1, 1, 1),
-            padding=(0, 1, 1),
-        )
-        self.maxpool3d = nn.MaxPool3d(
-            kernel_size=(1, 4, 4),
-            stride=(1, 4, 4),
-        )
-        self.fc = nn.Linear(128*128, 512)
-    
-    def forward(self, x):
-        # Input x: (batch_size, m, h=512, w=512)
-        x = x.unsqueeze(1)  # (batch_size, c=1, m, h, w)
-        x = self.conv3d(x)  # (batch_size, c=1, m, h'=h, w'=w)
-        x = self.maxpool3d(x)   # (batch_size, c=1, m, 128, 128)
-        x = x.squeeze(1)    # (batch_size, m, 128, 128)
-        batch_size, m, h, w = x.shape
-        x = x.view(batch_size, m, h*w)  # (batch_size, m, 128*128)
-        output = self.fc(x)  # (batch_size, m, 512)
+context_kinematic_fusion = torch.randn(batch_size, hidden_size)
+context_lc_lm = torch.randn(batch_size, hidden_size)
+context_sc_cd = torch.randn(batch_size, hidden_size)
 
-        return output
+# 2. 定义一个 [CLS] embedding，形状为 (batch_size, hidden_size)
+cls_emb = nn.Parameter(torch.randn(batch_size, hidden_size))
+
+# 3. 拼接这些张量
+# 将 3 个张量拼接成一个 (batch_size, 3, hidden_size) 的张量
+context_combined = torch.stack([context_kinematic_fusion, context_lc_lm, context_sc_cd], dim=1)
+print(context_combined.shape)
     
-if __name__ == '__main__':
+""" if __name__ == '__main__':
     extractor = SementicContextExtractor().cuda()
     input = torch.randn(5, 2, 512, 512).cuda()
     output = extractor(input)
-    print(output.shape)
+    print(output.shape) """
