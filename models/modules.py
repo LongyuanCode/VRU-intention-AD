@@ -122,6 +122,7 @@ class AdditiveAttention(nn.Module):
         self.W_h = nn.Linear(hidden_size, hidden_size)  # 作用在 GRU 输出 h_t 上
         self.W_s = nn.Linear(hidden_size, hidden_size)  # 作用在最终状态 s 上
         self.v = nn.Linear(hidden_size, 1)  # 计算得分
+        self.dropout = nn.Dropout()
 
     def forward(self, h, s):
         """
@@ -142,6 +143,6 @@ class AdditiveAttention(nn.Module):
         alpha_t = F.softmax(e_t, dim=1)  # 对 seq_len 维度进行 softmax
 
         # 计算上下文向量 c: (batch_size, seq_len, hidden_size) -> (batch_size, hidden_size)
-        context = torch.sum(alpha_t * h, dim=1)  # 加权求和，消去 seq_len 维度
+        context = torch.sum(self.dropout(alpha_t) * h, dim=1)  # 加权求和，消去 seq_len 维度
 
         return context, alpha_t  # 返回上下文向量和注意力权重

@@ -30,6 +30,7 @@ class PedestrianCrossingModel(nn.Module):
         self.gru_bb_bp_vs = nn.GRU(2 * 128, ATTN_EMB_SIZE, batch_first=True)
         # Attention mechanism of spatial kinematic
         self.attention_spatial_kinematic = AdditiveAttention(ATTN_EMB_SIZE)
+        self.spatial_kinematic_fc = nn.Linear(2 * ATTN_EMB_SIZE, ATTN_EMB_SIZE)
 
         # Local motion extractor
         self.local_motion_module = LocalMotionExtractor()
@@ -42,6 +43,7 @@ class PedestrianCrossingModel(nn.Module):
 
         # Attention mechanism of local content and local motion
         self.attention_lm_lc = AdditiveAttention(ATTN_EMB_SIZE)
+        self.fc_lm_lc = nn.Linear(2 * ATTN_EMB_SIZE, ATTN_EMB_SIZE)
 
         # Semantic Context 和 Categorical Depth
         self.semantic_context_extractor = SementicContextExtractor(SEMENTIC_CLASS_NUM)
@@ -51,7 +53,10 @@ class PedestrianCrossingModel(nn.Module):
 
         # Attention mechanism of spatial context
         self.attention_sc_cd = AdditiveAttention(512)
-        self.fc_sc_cd = nn.Linear(512, 128)
+        self.fc_sc_cd = nn.Linear(512 * 2, 128)
+
+        # Final Attention Fusion
+        self.final_attn_func = nn.LazyLinear(1)
 
         # Attention of all，使用hugging face上预训练过的encoder
         model_name = "prajjwal1/bert-small"
@@ -80,9 +85,13 @@ class PedestrianCrossingModel(nn.Module):
         kinematic_fusion, hn_bb_bp_vs = self.gru_bb_bp_vs(
             torch.cat((F.relu(bb_bp_out), speed_emb), -1)
         )  # (batch_size, seq_len, 128)
+        hn_bb_bp_vs = hn_bb_bp_vs.permute(1, 0, 2).squeeze(1)
         context_kinematic_fusion, _ = self.attention_spatial_kinematic(
             kinematic_fusion, hn_bb_bp_vs
         )  # (batch_size, 128)
+        local_global_kinematic_fusion = self.spatial_kinematic_fc(
+            torch.cat((context_kinematic_fusion, hn_bb_bp_vs), dim=-1)
+        )
 
         # Local Motion 和 Local Content 处理
         motion_out = self.local_motion_module(
@@ -98,9 +107,11 @@ class PedestrianCrossingModel(nn.Module):
         lc_lm_fusion, hn_lc_lm = self.gru_lm_lc(
             local_content_motion
         )  # (batch_size, seq_len, 128), (batch_size, 128)
+        hn_lc_lm = hn_lc_lm.permute(1, 0, 2).squeeze(1)
         context_lc_lm, _ = self.attention_lm_lc(
             lc_lm_fusion, hn_lc_lm
         )  # (batch_size, hidden_size)
+        local_global_lc_lm = self.fc_lm_lc(torch.cat((context_lc_lm, hn_lc_lm), dim=-1))
 
         # 语义上下文和深度特征处理
         semantic_context_out = F.relu(
@@ -112,14 +123,30 @@ class PedestrianCrossingModel(nn.Module):
         sc_cd_fusion, hn_sc_cd = self.gru_sc_cd(
             torch.cat((semantic_context_out, depth_out, -1))
         )
+        hn_sc_cd = hn_sc_cd.permute(1, 0, 2).squeeze(1)
         context_sc_cd, _ = self.attention_sc_cd(
             sc_cd_fusion, hn_sc_cd
         )  # (batch_size, 512)
-        context_sc_cd = self.fc_sc_cd(context_sc_cd)
+        local_global_sc_cd = self.fc_sc_cd(torch.cat((context_sc_cd, hn_sc_cd), dim=-1))
+
+        features_all = torch.stack([context_kinematic_fusion,
+                                    hn_bb_bp_vs,
+                                    context_lc_lm,
+                                    hn_lc_lm,
+                                    context_sc_cd,
+                                    hn_sc_cd], dim=1)
+        final_attn_weights = F.softmax(self.final_attn_func(features_all), dim=1)
+        final_attn_fus = torch.sum(final_attn_weights * features_all, dim=1)
 
         cls_emb = nn.Parameter(torch.randn(context_sc_cd.shape)).unsqueeze(1)
         sentence = torch.stack(
-            (cls_emb, context_kinematic_fusion, context_lc_lm, context_sc_cd), dim=1
+            (
+                cls_emb,
+                local_global_kinematic_fusion,
+                local_global_lc_lm,
+                local_global_sc_cd,
+            ),
+            dim=1,
         )
         input_emb = torch.cat((cls_emb, sentence), dim=1)
         cls_out = self.attn_all(input_emb)["last_hidden_state"][:, 0, :]
